@@ -31,6 +31,7 @@ from livekit import rtc
 import re
 from pydantic import BaseModel, Field, EmailStr
 from typing import Optional
+import re
 
 logger = logging.getLogger("mayfairtech-voice-agent")
 load_dotenv(dotenv_path=".env")
@@ -53,6 +54,158 @@ CONTACT_INFO = {
     "office_hours": "Mon–Fri: 9:00 AM – 6:00 PM, Sat: 10:00 AM – 2:00 PM, Sun: Closed",
 }
 
+UPSELL_MAP = {
+        "smartphones": ["Screen Protector", "Phone Case", "Wireless Charger"],
+        "laptops": ["Laptop Bag", "Wireless Mouse", "Cooling Pad"],
+        "headphones": ["Carrying Case", "Audio Cable", "Extra Ear Cushions"],
+        "smartwatches": ["Extra Straps", "Screen Guard", "Wireless Charger"],
+        "smart_home": ["Smart Bulb", "Smart Plug"],
+        "accessories": ["USB-C Cable", "Portable Power Bank"],
+}
+
+PRODUCTS = {
+    "smartphones": {
+        "Apple": [
+            {"model": "iPhone 15 Pro", "colors": ["Black", "Silver"], "price": 1200},
+            {"model": "iPhone 14", "colors": ["Blue", "Midnight"], "price": 900},
+        ],
+        "Samsung": [
+            {"model": "Galaxy S23", "colors": ["Black", "Green"], "price": 1000},
+            {"model": "Galaxy A54", "colors": ["White", "Black"], "price": 500},
+        ],
+        "Nokia": [
+            {"model": "Nokia G50", "colors": ["Blue", "Midnight Sun"], "price": 350},
+            {"model": "Nokia X20", "colors": ["Nordic Blue"], "price": 400},
+        ],
+        "Oppo": [
+            {"model": "Oppo Reno 8", "colors": ["Black", "Gold"], "price": 550},
+            {"model": "Oppo A57", "colors": ["Green", "Black"], "price": 250},
+        ],
+        "Realme": [
+            {"model": "Realme 10 Pro", "colors": ["Blue", "Black"], "price": 400},
+            {"model": "Realme C55", "colors": ["Yellow", "Black"], "price": 200},
+        ],
+        "Honor": [
+            {"model": "Honor 90", "colors": ["Emerald Green", "Black"], "price": 500},
+            {"model": "Honor X8", "colors": ["Silver", "Black"], "price": 300},
+        ],
+    },
+
+    "laptops": {
+        "Apple": [
+            {"model": "MacBook Air M2", "colors": ["Gray", "Silver"], "price": 1500},
+            {"model": "MacBook Pro 14", "colors": ["Silver"], "price": 2200},
+        ],
+        "Dell": [
+            {"model": "XPS 13", "colors": ["Silver"], "price": 1400},
+            {"model": "Inspiron 15", "colors": ["Black"], "price": 800},
+        ],
+        "HP": [
+            {"model": "HP Pavilion 15", "colors": ["Silver"], "price": 750},
+            {"model": "HP Spectre x360", "colors": ["Black"], "price": 1600},
+        ],
+        "Lenovo": [
+            {"model": "ThinkPad X1 Carbon", "colors": ["Black"], "price": 1700},
+            {"model": "IdeaPad 3", "colors": ["Gray"], "price": 600},
+        ],
+        "Huawei": [
+            {"model": "MateBook D15", "colors": ["Gray"], "price": 900},
+            {"model": "MateBook X Pro", "colors": ["Silver"], "price": 1800},
+        ],
+    },
+
+    "headphones": {
+        "Sony": [
+            {"model": "WH-1000XM5", "colors": ["Black", "Silver"], "price": 400},
+            {"model": "WF-C700N (Earbuds)", "colors": ["Black", "White"], "price": 120},
+        ],
+        "Apple": [
+            {"model": "AirPods Pro 2", "colors": ["White"], "price": 250},
+            {"model": "AirPods Max", "colors": ["Gray", "Pink"], "price": 600},
+        ],
+        "Audionic": [
+            {"model": "Audionic Airbud 550", "colors": ["Black"], "price": 40},
+            {"model": "Audionic Blue Beats B-747", "colors": ["Blue"], "price": 30},
+        ],
+    },
+
+    "smartwatches": {
+        "Apple": [
+            {"model": "Apple Watch Series 9", "colors": ["Black", "Pink"], "price": 450},
+            {"model": "Apple Watch SE", "colors": ["Silver", "White"], "price": 300},
+        ],
+        "Samsung": [
+            {"model": "Galaxy Watch 6", "colors": ["Black", "Silver"], "price": 350},
+            {"model": "Galaxy Watch 5 Pro", "colors": ["Gray"], "price": 400},
+        ],
+        "Huawei": [
+            {"model": "Huawei Watch GT 3", "colors": ["Brown", "Black"], "price": 280},
+            {"model": "Huawei Watch Fit", "colors": ["Pink", "Black"], "price": 150},
+        ],
+        "Amazfit": [
+            {"model": "Amazfit GTS 4", "colors": ["Black", "Gold"], "price": 200},
+            {"model": "Amazfit Bip 3", "colors": ["Blue", "Black"], "price": 80},
+        ],
+    },
+
+    "smart_home": {
+        "Google": [
+            {"model": "Nest Hub", "colors": ["White", "Charcoal"], "price": 100},
+            {"model": "Nest Mini", "colors": ["Gray", "Black"], "price": 50},
+        ],
+        "Amazon": [
+            {"model": "Echo Dot 5th Gen", "colors": ["Black", "Blue"], "price": 60},
+            {"model": "Echo Show 8", "colors": ["White", "Black"], "price": 120},
+        ],
+        "Xiaomi": [
+            {"model": "Mi Smart Speaker", "colors": ["Black", "White"], "price": 80},
+            {"model": "Mi Smart Clock", "colors": ["White"], "price": 60},
+        ],
+    },
+    
+    "accessories": {
+        "Belkin": [
+            {"model": "Wireless Charger", "colors": ["White"], "price": 50},
+            {"model": "MagSafe 3-in-1 Dock", "colors": ["Black"], "price": 120},
+        ],
+        "Logitech": [
+            {"model": "MX Master 3S Mouse", "colors": ["Black"], "price": 100},
+            {"model": "K380 Wireless Keyboard", "colors": ["Blue", "White"], "price": 40},
+        ],
+        "Audionic": [
+            {"model": "Power Bank 10000mAh", "colors": ["Black"], "price": 25},
+            {"model": "Bluetooth Speaker Alien-2", "colors": ["Red", "Black"], "price": 45},
+        ],
+        "Generic": [
+            {"model": "Screen Protector", "colors": ["Transparent"], "price": 10},
+            {"model": "Phone Case", "colors": ["Black", "Blue", "Red"], "price": 20},
+            {"model": "Laptop Bag", "colors": ["Black", "Gray"], "price": 40},
+            {"model": "Cooling Pad", "colors": ["Black"], "price": 25},
+            {"model": "Carrying Case", "colors": ["Black"], "price": 15},
+            {"model": "Extra Ear Cushions", "colors": ["Black"], "price": 10},
+            {"model": "Extra Straps", "colors": ["Black", "White", "Pink"], "price": 15},
+            {"model": "Screen Guard", "colors": ["Transparent"], "price": 8},
+            {"model": "Smart Bulb", "colors": ["White"], "price": 25},
+            {"model": "Smart Plug", "colors": ["White"], "price": 30},
+            {"model": "USB-C Cable", "colors": ["White", "Black"], "price": 12},
+            {"model": "Portable Power Bank", "colors": ["Black"], "price": 35},
+        ]
+    },
+}
+
+SHIPPING_COUNTRIES = {
+    "Pakistan": 0.00,
+    "United States": 0.15,
+    "USA": 0.15,
+    "United Kingdom": 0.12,
+    "UK": 0.12,
+    "UAE": 0.10,
+    "United Arab Emirates": 0.10,
+    "Germany": 0.14,
+    "India": 0.08,
+    "Canada": 0.16,
+}
+
 AMBIENT_AUDIO_FILES = [
     "audio/ambience1.mp3",
     "audio/ambience2.mp3",
@@ -66,153 +219,164 @@ AMBIENT_AUDIO_FILES = [
 
 LOG_FILE = "session_summary.json"
 
-import re
 
-
-#  ------------------------- Models ---------------------------------------------
-# class ContactForm(BaseModel):
-#     Name: str = Field(
-#         ..., max_length=50, description="Full name of the user. Max Length: 50"
-#     )
-#     Email: EmailStr = Field(..., description="Valid email address of the user")
-#     Phone: Optional[str] = Field(
-#         None,
-#         pattern=r"^\+?\d{10,15}$",  # ✅ changed from regex → pattern
-#         description="Phone number of the user (optional). Must be 10–15 digits, with optional leading +",
-#     )
-#     Subject: str = Field(
-#         ...,
-#         max_length=100,
-#         description="Subject line of the contact message. Max Length: 100",
-#     )
-#     Message: str = Field(
-#         ..., max_length=1000, description="The main message body. Max Length: 1000"
-#     )
-
-
-#  ------------------------- Helper functions -----------------------------------
-def is_valid_email(email: str) -> bool:
-    pattern = r"^[\w\.-]+@[\w\.-]+\.\w{2,}$"
-    return bool(re.match(pattern, email))
-
-
-def is_valid_phone(phone: str) -> bool:
-    # Example: accept numbers with optional +country code, spaces, or dashes
-    pattern = r"^\+?\d{7,15}$"
-    # Remove spaces or dashes for checking
-    phone_clean = phone.replace(" ", "").replace("-", "")
-    return bool(re.match(pattern, phone_clean))
-
-
-def get_next_field(current_field: str, data: dict) -> str | None:
+# ====== Pydantic models for the Agent ======
+class OrderRequest(BaseModel):
     """
-    Returns the next field key from FORM_SCHEMA order.
-    Skips over optional fields if they already have a value.
+    Structured order request. All fields validated.
+    note: category will be normalized to lowercase to match PRODUCTS keys.
     """
-    order = list(FORM_SCHEMA.keys())
-    try:
-        idx = order.index(current_field)
-    except ValueError:
+    name: str
+    email: EmailStr
+    category: str
+    brand: str
+    model: str
+    color: Optional[str] = None
+    quantity: int
+    country: str  # shipping destination (must be in SHIPPING_COUNTRIES)
+    city: Optional[str] = None
+
+    # validate category exists (normalize to lowercase)
+    @validator("category")
+    def _valid_category(cls, v):
+        if not v:
+            raise ValueError("Category is required.")
+        cat = v.lower()
+        if cat not in PRODUCTS:
+            raise ValueError(f"Unknown category '{v}'. Available: {', '.join(PRODUCTS.keys())}")
+        return cat
+
+    @validator("brand")
+    def _valid_brand(cls, v, values):
+        cat = values.get("category")
+        if not cat:
+            raise ValueError("Category must be provided before brand.")
+        brands = PRODUCTS[cat].keys()
+        match = next((b for b in brands if b.lower() == v.lower()), None)
+        if not match:
+            raise ValueError(f"Brand '{v}' not found in category '{cat}'. Available: {', '.join(brands)}")
+        return match  # canonical brand
+
+    @validator("model")
+    def _valid_model(cls, v, values):
+        cat = values.get("category")
+        brand = values.get("brand")
+        if not (cat and brand):
+            raise ValueError("Category and brand must be set before model.")
+        items = PRODUCTS[cat][brand]
+        match = next((it for it in items if it["model"].lower() == v.lower()), None)
+        if not match:
+            raise ValueError(f"Model '{v}' not found under {brand}. Available: {', '.join([it['model'] for it in items])}")
+        return match["model"]  # canonical model string
+
+    @validator("color")
+    def _valid_color(cls, v, values):
+        if v is None:
+            return None
+        cat = values.get("category")
+        brand = values.get("brand")
+        model = values.get("model")
+        if not (cat and brand and model):
+            raise ValueError("category/brand/model must be provided before color.")
+        items = PRODUCTS[cat][brand]
+        item = next((it for it in items if it["model"] == model), None)
+        if not item:
+            raise ValueError("Product not found for color validation.")
+        colors = item.get("colors", [])
+        match = next((c for c in colors if c.lower() == v.lower()), None)
+        if not match:
+            raise ValueError(f"Color '{v}' not available for {brand} {model}. Available: {', '.join(colors)}")
+        return match  # canonical color
+
+    @validator("quantity")
+    def _valid_quantity(cls, v):
+        if v is None or v < 1:
+            raise ValueError("Quantity must be a positive integer (>=1).")
+        return v
+
+    @validator("country")
+    def _valid_country(cls, v):
+        if not v:
+            raise ValueError("Country is required for shipping.")
+        # canonicalize against SHIPPING_COUNTRIES keys (case-insensitive)
+        match = next((k for k in SHIPPING_COUNTRIES.keys() if k.lower() == v.lower()), None)
+        if not match:
+            raise ValueError(f"Shipping not available to '{v}'. Supported: {', '.join(SHIPPING_COUNTRIES.keys())}")
+        return match  # canonical country key
+
+
+class ConfirmOrderRequest(BaseModel):
+    """
+    For confirming or cancelling a pending order.
+    If order_id omitted, the function will look in context.session_data['pending_order'].
+    """
+    order_id: Optional[str] = None
+    confirm: bool = True
+
+
+class ComplaintModel(BaseModel):
+    name: str
+    email: EmailStr
+    order_id: Optional[str]
+    complaint: str
+
+    @validator("complaint")
+    def complaint_not_empty(cls, v):
+        if not v.strip():
+            raise ValueError("Complaint cannot be empty")
+        return v
+
+#  ------------------------- Helper functions ----------------------------------
+
+def _find_product_entry(category: str, brand: str, model: str):
+    """
+    Returns the product dict for the given category/brand/model (canonical).
+    Case-insensitive matching for brand/model.
+    """
+    cat = category.lower()
+    if cat not in PRODUCTS:
         return None
-
-    for next_idx in range(idx + 1, len(order)):
-        next_field = order[next_idx]
-        # If already filled, skip
-        if next_field in data and data[next_field].strip():
-            continue
-        return next_field
-
-    return None
-
-
-# def send_email_to_user(to_email: str, form_data: dict):
-#     sender_email = "procrastinalot@gmail.com"
-#     sender_password = os.getenv("EMAIL_APP_PASSWORD")  # store your app password in .env
-#     subject = "Your MayfairTech Contact Form Submission"
-
-#     body = f"""
-#     Hi {form_data.get('name')},
-
-#     Thank you for contacting MayfairTech.ai. Here is a summary of your submitted form:
-
-#     Name: {form_data.get('name')}
-#     Email: {form_data.get('email')}
-#     Phone: {form_data.get('phone')}
-#     Subject: {form_data.get('subject')}
-#     Message: {form_data.get('message')}
-
-#     Our team will get back to you shortly.
-
-#     Best regards,
-#     MayfairTech.ai
-#     """
-
-#     msg = MIMEMultipart()
-#     msg['From'] = sender_email
-#     msg['To'] = to_email
-#     msg['Subject'] = subject
-#     msg.attach(MIMEText(body, 'plain'))
-
-#     try:
-#         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-#             server.login(sender_email, sender_password)
-#             server.send_message(msg)
-#         logger.info(f"✅ Email sent to {to_email}")
-#     except Exception as e:
-#         logger.error(f"❌ Failed to send email to {to_email}: {e}")
-
-from openai import OpenAI
-
-client = OpenAI()
+    # find canonical brand
+    brand_map = PRODUCTS[cat]
+    matched_brand = next((b for b in brand_map.keys() if b.lower() == brand.lower()), None)
+    if not matched_brand:
+        return None
+    # find model
+    items = brand_map[matched_brand]
+    matched_item = next((it for it in items if it["model"].lower() == model.lower()), None)
+    return (matched_brand, matched_item) if matched_item else None
 
 
-def is_message_appropriate(message: str) -> bool:
+# small send-email helper (use your existing send_email function if present)
+def send_email(to_email: str, subject: str, body: str) -> bool:
     """
-    Returns True if message passes moderation, False otherwise
+    Simple SMTP-based sender. Uses EMAIL_USER and EMAIL_APP_PASSWORD from env (.env).
+    Returns True if send succeeded, False otherwise.
     """
-    response = client.moderations.create(model="omni-moderation-latest", input=message)
-    # Access via attributes
-    results = response.results[0]  # use .results, not ["results"]
-    return not results.flagged
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
 
+    sender = os.getenv("EMAIL_USER")
+    pwd = os.getenv("EMAIL_APP_PASSWORD")
+    if not sender or not pwd:
+        logger.warning("Email credentials not set; skipping email send.")
+        return False
 
-def detect_user_intent(user_input: str) -> str:
-    """
-    Uses an LLM to classify user intent for form confirmation.
-    Returns: 'submit', 'cancel', or 'unknown'
-    """
-    intent_prompt = f"""
-    You are an intent classifier for a contact form assistant.
-    The user just previewed their form and now decides whether to submit it.
-
-    Classify their intent as one of:
-    - "submit"  → they want to send/confirm/submit
-    - "cancel"  → they want to cancel/stop/discard
-    - "unknown" → unclear or anything else
-
-    User input: "{user_input}"
-    """
-
+    msg = MIMEMultipart()
+    msg["From"] = sender
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # lightweight + cheap, adjust if needed
-            messages=[
-                {"role": "system", "content": "You are a strict intent classifier."},
-                {"role": "user", "content": intent_prompt},
-            ],
-            max_tokens=2,
-            temperature=0,
-        )
-
-        intent = response.choices[0].message.content.strip().lower()
-        if intent in ["submit", "cancel"]:
-            return intent
-        return "unknown"
-
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender, pwd)
+            server.send_message(msg)
+        logger.info(f"Email sent to {to_email}")
+        return True
     except Exception as e:
-        logger.error(f"OpenAI intent detection failed: {e}")
-        return "unknown"
-
+        logger.error(f"Failed to send email to {to_email}: {e}")
+        return False
 
 async def rotate_ambience(background_audio, interval=180):
     """Randomly rotate ambience every `interval` seconds."""
@@ -222,6 +386,19 @@ async def rotate_ambience(background_audio, interval=180):
         await background_audio.set_ambient(AudioConfig(new_file, volume=0.6))
         await asyncio.sleep(interval)
 
+def save_complaint(data: ComplaintModel):
+    """Save complaint to file"""
+    record = {
+        "name": data.name,
+        "email": data.email,
+        "order_id": data.order_id or "N/A",
+        "complaint": data.complaint,
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+    with open("complaints.json", "a", encoding="utf-8") as f:
+        json.dump(record, f)
+        f.write("\n")
+    return record
 
 # ----------------------------------- AGENT CLASS -----------------------------------
 
@@ -397,81 +574,330 @@ class MayfairTechAgent(Agent):
         logger.info(f"Order Response: {response}")
         return response
 
-    # ------------------ FLOW 5: Customer Support Form ------------------
-    # @function_tool()
-    # async def assist_contact_form(
-    #     self, context: RunContext, form: ContactForm, user_input: str
-    # ) -> str:
-    #     """
-    #     Assist the user in filling and submitting a structured contact form.
+    # ------------------ FLOW 5: Browsing Products ------------------
+    @function_tool()
+    async def browse_products(
+        self, 
+        context: RunContext, 
+        category: Optional[str] = None, 
+        brand: Optional[str] = None, 
+        color: Optional[str] = None, 
+        max_price: Optional[float] = None
+    ) -> str:
+        """
+        Allows the user to browse available products by category, brand, color, and price range.
 
-    #     Schema:
-    #     --------
-    #     The form follows the Pydantic model `ContactForm`:
-    #             Name: str = Field(..., description="Full name of the user.")
-    #             Email: EmailStr = Field(..., description="Valid email address.")
-    #             Phone: Optional[str] = Field(None, description="Phone number (optional).")
-    #             Subject: str = Field(..., description="Subject of the message.")
-    #             Message: str = Field(..., description="Detailed message from the user.")
+        Situations:
+            - When the user asks general product queries: "What gadgets do you have?"
+            - When the user asks specific queries: "Show me Apple smartphones under $1000 in black."
+            - When the user wants to filter by category, brand, color, or budget.
 
-    #     Workflow:
-    #     ---------
-    #     1. **Preview Step**:
-    #     - When the form is first received, the assistant shows the user a preview
-    #         of the entered details (Name, Email, Phone, Subject, Message).
-    #     - The assistant then asks: *"Would you like me to submit this form now?"*
+        Args:
+            category (str, optional): Product category (e.g., 'smartphones', 'laptops').
+            brand (str, optional): Brand name (e.g., 'Apple', 'Samsung').
+            color (str, optional): Preferred color (e.g., 'Black', 'Silver').
+            max_price (float, optional): Maximum budget for filtering results.
 
-    #     2. **Confirmation Step**:
-    #     - The assistant waits for the user’s response.
-    #     - The response is classified with LLM-powered intent detection
-    #         (`detect_form_intent_llm()`).
-    #     - Possible intents:
-    #         - `"submit"` → form is confirmed and submitted.
-    #         - `"cancel"` → form submission is canceled and cleared.
-    #         - `"unknown"` → user’s response was unclear; the assistant re-asks.
-    #     Returns:
-    #     --------
-    #     str : A human-readable message for the user indicating:
-    #         - The form preview (first step).
-    #         - Confirmation/cancelation/submission status.
-    #     """
-    #     logger.info("---------- Assist Contact Form ----------")
-    #     logger.info(f"Form received: {form.model_dump()}")
+        Returns:
+            str: A list of matching products, or suggestions if no exact match is found.
+        """
+        logger.info(
+            f"Browsing products | category={category}, brand={brand}, color={color}, max_price={max_price}"
+        )
 
-    #     form_state = context.session_data.get("contact_form", {})
+        results = []
+        categories = PRODUCTS.keys()
 
-    #     # Step 1: Preview
-    #     if not form_state.get("preview_shown"):
-    #         context.session_data["contact_form"] = {
-    #             "data": form.model_dump(),
-    #             "preview_shown": True,
-    #         }
-    #         return (
-    #             f"Here’s what I got:\n\n"
-    #             f"- **Name:** {form.Name}\n"
-    #             f"- **Email:** {form.Email}\n"
-    #             f"- **Phone:** {form.Phone or '(skipped)'}\n"
-    #             f"- **Subject:** {form.Subject}\n"
-    #             f"- **Message:** {form.Message}\n\n"
-    #             "Would you like me to submit this form now? (yes/no)"
-    #         )
+        # If category is specified, filter within it
+        search_categories = [category.lower()] if category and category.lower() in categories else categories
 
-    #     logger.info("----------------- Detecting User's Intent ----------------")
+        for cat in search_categories:
+            for brand_name, items in PRODUCTS[cat].items():
+                if brand and brand.lower() != brand_name.lower():
+                    continue
+                for item in items:
+                    if color and color.lower() not in [c.lower() for c in item["colors"]]:
+                        continue
+                    if max_price and item["price"] > max_price:
+                        continue
+                    results.append(
+                        f"{brand_name} {item['model']} "
+                        f"(Colors: {', '.join(item['colors'])}, Price: ${item['price']})"
+                    )
 
-    #     # Step 2: Confirmation
-    #     user_input = form.UserReply or ""
-    #     intent = detect_user_intent(user_input)
+        if results:
+            return "Here are the products matching your search:\n- " + "\n- ".join(results)
+        else:
+            return (
+                "No exact matches found. You can explore these categories instead:\n"
+                + ", ".join(categories)
+            )
+    
+    # ------------------ FLOW 6: Placing Orders ------------------
+    @function_tool()
+    async def place_order(self, context: RunContext, order: OrderRequest) -> dict:
+        """
+        Situation:
+            Called when user provides order details (name, email, category, brand, model, color, quantity, country).
+            This returns an order preview and requires explicit confirmation to finalize.
+        Args:
+            context (RunContext): conversation context
+            order (OrderRequest): validated order request
+        Returns:
+            dict: {
+                "order_id": str,
+                "summary": str,
+                "base_price": float,
+                "subtotal": float,
+                "surcharge": float,
+                "total": float,
+                "requires_confirmation": True
+            }
+        """
+        logger.info(f"Placing order preview for {order.name} | {order.brand} {order.model} x{order.quantity}")
 
-    #     if intent == "submit":
-    #         logger.info("✅ Form confirmed by user, submitting...")
-    #         context.session_data.pop("contact_form", None)
-    #         return "✅ Your contact form has been submitted successfully!"
-    #     elif intent == "cancel":
-    #         logger.info("❌ User canceled the form")
-    #         context.session_data.pop("contact_form", None)
-    #         return "❌ The form has been canceled. Do you want me to help with something else?"
-    #     else:
-    #         return "I wasn’t sure — would you like me to submit the form now? (yes/no)"
+        # get product entry (should exist thanks to validators)
+        entry = _find_product_entry(order.category, order.brand, order.model)
+        if not entry:
+            msg = "Internal error: product not found."
+            logger.error(msg)
+            return {"error": msg}
+
+        _, product = entry
+        base_price = float(product["price"])
+        subtotal = base_price * order.quantity
+
+        surcharge_pct = SHIPPING_COUNTRIES.get(order.country, 0.0)
+        surcharge_amount = round(subtotal * surcharge_pct, 2)
+        total = round(subtotal + surcharge_amount, 2)
+
+        order_id = f"ORD{random.randint(10000, 99999)}"
+
+        summary_lines = [
+            f"Order Preview (ID: {order_id})",
+            f"Customer: {order.name} <{order.email}>",
+            f"Product: {order.brand} {order.model} ({order.color or 'default'})",
+            f"Quantity: {order.quantity}",
+            f"Unit price: ${base_price}",
+            f"Subtotal: ${subtotal}",
+            f"Shipping to: {order.city or ''} {order.country}",
+            f"Shipping surcharge: {int(surcharge_pct*100)}% (${surcharge_amount})",
+            f"Total: ${total}",
+            "",
+            "Please confirm to finalize the order."
+        ]
+        summary = "\n".join(summary_lines)
+
+        # save pending order in session (until user confirms)
+        context.session_data["pending_order"] = {
+            "id": order_id,
+            "request": order.model_dump(),  # pydantic -> dict
+            "base_price": base_price,
+            "subtotal": subtotal,
+            "surcharge": surcharge_amount,
+            "total": total,
+            "status": "pending",
+            "created_at": datetime.utcnow().isoformat(),
+        }
+
+        logger.info(f"Pending order saved: {order_id}")
+
+        return {
+            "order_id": order_id,
+            "summary": summary,
+            "base_price": base_price,
+            "subtotal": subtotal,
+            "surcharge": surcharge_amount,
+            "total": total,
+            "requires_confirmation": True,
+        }
+
+
+    # ------------------ FLOW 7: Confirming Order ------------------
+    @function_tool()
+    async def confirm_order(self, context: RunContext, request: ConfirmOrderRequest) -> str:
+        """
+        Situation:
+            Called when user confirms/cancels the previewed order.
+        Args:
+            context (RunContext): conversation context
+            request (ConfirmOrderRequest): {order_id (optional), confirm: bool}
+        Returns:
+            str: final confirmation message (and will send receipt email if confirmed)
+        """
+        pending = None
+        if request.order_id:
+            # prefer provided id (but still validate it matches stored pending if any)
+            pending_all = context.session_data.get("pending_order")
+            if pending_all and pending_all.get("id") == request.order_id:
+                pending = pending_all
+        else:
+            pending = context.session_data.get("pending_order")
+
+        if not pending:
+            logger.warning("No pending order found to confirm/cancel.")
+            return "❌ No pending order found. Please create an order first."
+
+        if not request.confirm:
+            # cancel pending order
+            context.session_data.pop("pending_order", None)
+            logger.info(f"Pending order {pending['id']} cancelled by user.")
+            return f"❌ Order {pending['id']} cancelled as requested."
+
+        # finalize
+        order_id = pending["id"]
+        ORDERS[order_id] = {
+            **pending,
+            "status": "confirmed",
+            "confirmed_at": datetime.utcnow().isoformat(),
+        }
+
+        # attempt to send receipt
+        req = pending["request"]
+        customer_email = req.get("email")
+        receipt_body = (
+            f"Thank you {req.get('name')}!\n\n"
+            f"Your order {order_id} has been confirmed.\n\n"
+            f"Item: {req.get('brand')} {req.get('model')} ({req.get('color') or 'default'})\n"
+            f"Quantity: {req.get('quantity')}\n"
+            f"Total paid: ${pending['total']}\n\n"
+            "We'll notify you when your order ships.\n\n"
+            "— MayfairTech Sales"
+        )
+        sent = send_email(customer_email, f"Receipt for {order_id}", receipt_body)
+        if sent:
+            logger.info(f"Receipt sent for order {order_id} to {customer_email}")
+        else:
+            logger.warning(f"Receipt NOT sent for order {order_id} to {customer_email}")
+
+        # remove pending
+        context.session_data.pop("pending_order", None)
+
+        return f"✅ Order {order_id} confirmed! A receipt has been sent to {customer_email if sent else 'your email (failed to send)'}."
+
+    # -------------------- FLOW 8: Upselling Products -------------------
+    @function_tool()
+    async def upsell(self, item: str, context: RunContext) -> str:
+        """
+        Suggests related products for upselling and updates the order preview
+        if the user accepts.
+        """
+        suggestion_list = UPSELL_MAP.get(item, None)
+
+        if not suggestion_list:
+            return f"No related upsells found for {item}."
+
+        # Collect only upsells that exist in PRODUCTS["accessories"]
+        valid_suggestions = []
+        for suggestion in suggestion_list:
+            for brand, models in PRODUCTS["accessories"].items():
+                for m in models:
+                    if m["model"].lower() == suggestion.lower():
+                        valid_suggestions.append(m)
+
+        if not valid_suggestions:
+            return f"No related upsells found for {item}."
+
+        # If we already have an order preview in session, attach upsell suggestion
+        if "order_preview" not in context.session_data:
+            context.session_data["order_preview"] = {"items": [], "total": 0}
+
+        # Build suggestion text for user
+        suggestion_text = ", ".join([m["model"] for m in valid_suggestions])
+
+        # Store available upsells in session so next user message can be matched
+        context.session_data["pending_upsells"] = valid_suggestions
+
+        return (
+            f"💡 Many customers who bought {item} also added {suggestion_text}. "
+            "Would you like to include one of these in your order?"
+        )
+
+    # -------------------- FLOW 9: Updating Order after Upselling Products -------------------
+    @function_tool()
+    async def add_upsell_to_order(self, upsell_item: str, context: RunContext) -> str:
+        """
+        Adds the selected upsell product into the current order preview.
+        """
+        upsells = context.session_data.get("pending_upsells", [])
+        order = context.session_data.get("order_preview", {"items": [], "total": 0})
+
+        match = None
+        for u in upsells:
+            if upsell_item.lower() in u["model"].lower():
+                match = u
+                break
+
+        if not match:
+            return f"Sorry, I couldn’t find {upsell_item} in available upsell options."
+
+        # Add upsell item
+        order["items"].append({"model": match["model"], "price": match["price"], "qty": 1})
+        order["total"] += match["price"]
+
+        # Update session
+        context.session_data["order_preview"] = order
+        context.session_data.pop("pending_upsells", None)  # clear after adding
+
+        return (
+            f"✅ Added {match['model']} (${match['price']}) to your order. "
+            f"Your updated total is now ${order['total']}."
+        )
+   
+
+    # -------------------- FLOW 10: Registering Complaints -------------------
+    @function_tool()
+    async def register_complaint(
+        self,
+        complaint: ComplaintModel,
+        context: RunContext,
+        confirm: Optional[bool] = False,
+    ) -> str:
+        """
+        Register a customer complaint.
+        Args:
+            complaint (ComplaintModel): Validated complaint info.
+            confirm (bool): If False, show preview. If True, save and send emails.
+        """
+
+        # Step 1: Preview if not confirmed
+        if not confirm:
+            preview = (
+                f"📝 Complaint Preview:\n\n"
+                f"Name: {complaint.name}\n"
+                f"Email: {complaint.email}\n"
+                f"Order ID: {complaint.order_id or 'N/A'}\n"
+                f"Complaint: {complaint.complaint}\n\n"
+                f"✅ Please confirm if you want to register this complaint."
+            )
+            return preview
+
+        # Step 2: Save complaint
+        record = save_complaint(complaint)
+
+        # Step 3: Send emails
+        body = (
+            f"Dear {complaint.name},\n\n"
+            f"Your complaint has been registered successfully.\n\n"
+            f"Details:\n"
+            f"Order ID: {complaint.order_id or 'N/A'}\n"
+            f"Complaint: {complaint.complaint}\n\n"
+            f"Our support team will contact you soon.\n\n"
+            f"Best Regards,\nCustomer Support"
+        )
+
+        user_sent = send_email(complaint.email, "Complaint Registered", body)
+        company_sent = send_email(COMPANY_COMPLAINT_EMAIL, f"New Complaint from {complaint.name}", body)
+
+        if user_sent and company_sent:
+            return "✅ Your complaint has been registered and a copy has been sent to your email and our support team."
+        elif user_sent:
+            return "⚠️ Complaint registered and sent to you, but failed to notify support."
+        elif company_sent:
+            return "⚠️ Complaint registered and sent to support, but failed to send copy to your email."
+        else:
+            return "⚠️ Complaint registered locally, but email sending failed."
+    
 
 
 # ------------------ AGENT LIFECYCLE ------------------
