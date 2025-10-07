@@ -31,6 +31,7 @@ from livekit import rtc
 import re
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from typing import Optional
+import re
 
 logger = logging.getLogger("mayfairtech-voice-agent")
 load_dotenv(dotenv_path=".env")
