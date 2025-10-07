@@ -1,5 +1,7 @@
 import logging
 import asyncio
+from livekit import api  # <-- Add this import (LiveKit server-side SDK)
+from livekit.api import DeleteRoomRequest
 import json
 import os
 from pathlib import Path
@@ -39,7 +41,7 @@ load_dotenv(dotenv_path=".env")
 if not hasattr(RunContext, "session_data"):
     RunContext.session_data = {}
 
-SESSION_DURATION_MINUTES = 1  # session limit
+SESSION_DURATION_MINUTES = 15  # session limit
 
 CONTACT_INFO = {
     "address": "123 Innovation Avenue, Karachi, Pakistan",
@@ -292,18 +294,6 @@ class OrderItem(BaseModel):
     model: str
     quantity: int = 1
     color: Optional[str] = None
-
-
-# class OrderRequest(BaseModel):
-#     name: str
-#     email: EmailStr
-#     items: list[OrderItem]
-
-#     @field_validator("name")
-#     def validate_name(cls, v):
-#         if not v.strip().replace(" ", "").isalpha():
-#             raise ValueError("Name must contain only letters and spaces.")
-#         return v
 
 
 class OrderRequest(BaseModel):
@@ -1031,16 +1021,13 @@ async def entrypoint(ctx: JobContext):
 
     agent = MayfairTechAgent()
     usage_collector = metrics.UsageCollector()
-
-    # Store conversation in memory
     conversation_log = []
 
-    # --- Collect from session (AgentMetrics)
+    # Collect metrics
     @session.on("metrics_collected")
     def on_agent_metrics(agent_metrics: metrics.AgentMetrics):
         usage_collector.collect(agent_metrics)
 
-    # --- Collect directly from engines
     @agent.llm.on("metrics_collected")
     def on_llm_metrics(llm_metrics: metrics.LLMMetrics):
         usage_collector.collect(llm_metrics)
@@ -1053,7 +1040,7 @@ async def entrypoint(ctx: JobContext):
     def on_tts_metrics(tts_metrics: metrics.TTSMetrics):
         usage_collector.collect(tts_metrics)
 
-    # --- Capture conversation turns
+    # Log conversation turns
     @session.on("user_message")
     def on_user_message(msg):
         if msg.text.strip():
@@ -1076,7 +1063,7 @@ async def entrypoint(ctx: JobContext):
                 }
             )
 
-    # --- Track call lifecycle
+    # --- Call lifecycle tracking
     @ctx.room.on("participant_connected")
     def on_connected(remote: rtc.RemoteParticipant):
         logger.info("👤 Participant connected.")
@@ -1087,17 +1074,14 @@ async def entrypoint(ctx: JobContext):
     def on_finished(remote: rtc.RemoteParticipant):
         call_start = getattr(ctx, "call_start", None)
         call_end = datetime.utcnow()
-
         duration_minutes = (
             (call_end - call_start).total_seconds() / 60.0 if call_start else 0.0
         )
 
         summary = usage_collector.get_summary()
-        summary_dict = summary.__dict__ if hasattr(summary, "__dict__") else summary
-
         record = {
             "session_id": datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
-            "metrics": summary_dict,
+            "metrics": summary.__dict__ if hasattr(summary, "__dict__") else summary,
             "duration_minutes": duration_minutes,
             "conversation": conversation_log,
         }
@@ -1108,41 +1092,56 @@ async def entrypoint(ctx: JobContext):
 
         logger.info(f"✅ Record saved to JSON: {record['session_id']}")
 
-    # ----- Session Timeout Logic -----
+    # ----- Session Timeout Logic + Room Deletion -----
     async def end_session_after_timeout():
         await asyncio.sleep(SESSION_DURATION_MINUTES * 60)
-        logger.warning("⏰ Session time limit reached. Ending session now...")
+        logger.warning(
+            "⏰ Session time limit reached. Ending session and deleting room..."
+        )
+
         try:
             await session.stop()
             logger.info("🧩 Agent session stopped.")
         except Exception as e:
             logger.error(f"⚠️ Error stopping session: {e}")
 
-        # Disconnect all participants
+        # Disconnect participants
         try:
-            for p in list(ctx.room.participants.values()):
+            for p in list(ctx.room.remote_participants.values()):
                 logger.info(f"Disconnecting participant: {p.identity}")
                 await p.disconnect()
             logger.info("✅ All participants disconnected.")
         except Exception as e:
             logger.error(f"⚠️ Error disconnecting participants: {e}")
 
-        # Finally disconnect room
+        # Delete the room server-side using LiveKit API
+        try:
+            client = api.RoomServiceClient(
+                os.getenv("LIVEKIT_API_URL"),
+                os.getenv("LIVEKIT_API_KEY"),
+                os.getenv("LIVEKIT_API_SECRET"),
+            )
+            await client.delete_room(room=ctx.room.name)
+            logger.info(
+                f"💣 Room '{ctx.room.name}' deleted successfully from LiveKit server."
+            )
+        except Exception as e:
+            logger.error(f"⚠️ Error deleting LiveKit room: {e}")
+
+        # Disconnect local room connection
         try:
             await ctx.room.disconnect()
-            logger.info("🏁 Room disconnected successfully.")
+            logger.info("🏁 Local room connection closed.")
         except Exception as e:
-            logger.error(f"⚠️ Error disconnecting room: {e}")
+            logger.error(f"⚠️ Error closing local room connection: {e}")
 
-    # Start the background timeout task
+    # Start background timeout task
     asyncio.create_task(end_session_after_timeout())
 
-    # --- Start the session properly before saying anything
+    # --- Start agent session
     ctx.call_start = datetime.utcnow()
     await session.start(
-        room=ctx.room,
-        agent=agent,
-        room_input_options=RoomInputOptions(),
+        room=ctx.room, agent=agent, room_input_options=RoomInputOptions()
     )
 
     # --- Background ambient sounds
@@ -1153,146 +1152,10 @@ async def entrypoint(ctx: JobContext):
             AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING2, volume=0.6),
         ],
     )
-
     await background_audio.start(room=ctx.room, agent_session=session)
 
-    # --- Now safe to greet
+    # --- Initial greeting
     await session.say("Hi, I’m your MayfairTech Assistant! How can I help you today?")
-
-
-# async def entrypoint(ctx: JobContext):
-#     logger.info(f"connecting to room {ctx.room.name}")
-#     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
-
-#     # Wait for the first participant
-#     participant = await ctx.wait_for_participant()
-#     logger.info(f"starting voice assistant for participant {participant.identity}")
-
-#     session = AgentSession(
-#         vad=ctx.proc.userdata["vad"],
-#         min_endpointing_delay=0.9,
-#         max_endpointing_delay=5.0,
-#     )
-
-#     agent = MayfairTechAgent()
-#     usage_collector = metrics.UsageCollector()
-
-#     # Store conversation in memory
-#     conversation_log = []
-
-#     # --- Collect from session (AgentMetrics)
-#     @session.on("metrics_collected")
-#     def on_agent_metrics(agent_metrics: metrics.AgentMetrics):
-#         usage_collector.collect(agent_metrics)
-
-#     # --- Collect directly from engines
-#     @agent.llm.on("metrics_collected")
-#     def on_llm_metrics(llm_metrics: metrics.LLMMetrics):
-#         usage_collector.collect(llm_metrics)
-
-#     @agent.stt.on("metrics_collected")
-#     def on_stt_metrics(stt_metrics: metrics.STTMetrics):
-#         usage_collector.collect(stt_metrics)
-
-#     @agent.tts.on("metrics_collected")
-#     def on_tts_metrics(tts_metrics: metrics.TTSMetrics):
-#         usage_collector.collect(tts_metrics)
-
-#     # --- Capture conversation turns (FIXED)
-#     @session.on("user_message")
-#     def on_user_message(msg):
-#         if msg.text.strip():
-#             conversation_log.append(
-#                 {
-#                     "role": "user",
-#                     "text": msg.text,
-#                     "timestamp": datetime.utcnow().isoformat(),
-#                 }
-#             )
-
-#     @session.on("assistant_message")
-#     def on_assistant_message(msg):
-#         if msg.text.strip():
-#             conversation_log.append(
-#                 {
-#                     "role": "assistant",
-#                     "text": msg.text,
-#                     "timestamp": datetime.utcnow().isoformat(),
-#                 }
-#             )
-
-#     # --- Track call lifecycle
-#     @ctx.room.on("participant_connected")
-#     def on_connected(remote: rtc.RemoteParticipant):
-#         print("participant connected")
-#         ctx.call_start = datetime.utcnow()
-#         print("-------- Call Started -------", ctx.call_start)
-
-#     @ctx.room.on("participant_disconnected")
-#     def on_finished(remote: rtc.RemoteParticipant):
-#         call_start = getattr(ctx, "call_start", None)
-#         call_end = datetime.utcnow()
-
-#         if call_start:
-#             duration_minutes = (call_end - call_start).total_seconds() / 60.0
-#         else:
-#             duration_minutes = 0.0
-
-#         summary = usage_collector.get_summary()
-#         summary_dict = summary.__dict__ if hasattr(summary, "__dict__") else summary
-
-#         record = {
-#             "session_id": datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
-#             "metrics": summary_dict,
-#             "duration_minutes": duration_minutes,
-#             "conversation": conversation_log,
-#         }
-
-#         # Append to JSON file (NDJSON style, one session per line)
-#         with open(LOG_FILE, "a", encoding="utf-8") as f:
-#             json.dump(record, f, ensure_ascii=False)
-#             f.write("\n")
-
-#         print("✅ Record saved to JSON:", record["session_id"])
-
-#     # ----- Keeping the session on for only 20 minutes:
-
-#     async def end_session_after_timeout():
-#         await asyncio.sleep(SESSION_DURATION_MINUTES * 60)
-#         # Log to both logger and terminal
-#         logger.info("⏰ Session time limit reached. Ending session.")
-#         print(f"[{datetime.utcnow().isoformat()}] ⏰ Session time limit reached. Ending session.")
-#         # Stop the agent session
-#         await session.stop()
-
-#         # Disconnect all participants
-#         for p in ctx.room.participants.values():
-#             await p.disconnect()
-#         logger.info("✅ Session ended and room disconnected.")
-#         print(f"[{datetime.utcnow().isoformat()}] ✅ Session ended and room disconnected.")
-
-#     # Start the background timeout task
-#     asyncio.create_task(end_session_after_timeout())
-
-#     # --- Start the session
-#     ctx.call_start = datetime.utcnow()
-#     await session.start(
-#         room=ctx.room,
-#         agent=agent,
-#         room_input_options=RoomInputOptions(),
-#     )
-
-#     background_audio = BackgroundAudioPlayer(
-#         ambient_sound=AudioConfig(random.choice(AMBIENT_AUDIO_FILES), volume=0.6),
-#         thinking_sound=[
-#             AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.7),
-#             AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING2, volume=0.6),
-#         ],
-#     )
-
-#     await background_audio.start(room=ctx.room, agent_session=session)
-
-#     await session.say("Hi, I’m your MayfairTech Assistant! How can I help you today?")
 
 
 if __name__ == "__main__":
