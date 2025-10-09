@@ -2,6 +2,7 @@ import logging
 import asyncio
 from livekit import api  # <-- Add this import (LiveKit server-side SDK)
 from livekit.api import DeleteRoomRequest
+from livekit.api import DeleteRoomRequest
 import json
 import os
 from pathlib import Path
@@ -28,7 +29,7 @@ from livekit.plugins import openai, silero
 from livekit.agents import BackgroundAudioPlayer, AudioConfig, BuiltinAudioClip
 from livekit.agents.llm import ChatMessage
 from context import CONTEXT
-from datetime import datetime
+from datetime import datetime, timedelta
 from livekit import rtc
 import re
 from pydantic import BaseModel, Field, EmailStr, field_validator
@@ -41,7 +42,7 @@ load_dotenv(dotenv_path=".env")
 if not hasattr(RunContext, "session_data"):
     RunContext.session_data = {}
 
-SESSION_DURATION_MINUTES = 15  # session limit
+SESSION_DURATION_MINUTES = 1  # session limit
 
 CONTACT_INFO = {
     "address": "123 Innovation Avenue, Karachi, Pakistan",
@@ -203,7 +204,6 @@ PRODUCTS = {
 SHIPPING_COUNTRIES = {
     "Pakistan": 0.00,
     "United States": 0.15,
-    "USA": 0.15,
     "United Kingdom": 0.12,
     "UK": 0.12,
     "UAE": 0.10,
@@ -310,12 +310,18 @@ class OrderRequest(BaseModel):
 
     @field_validator("country")
     def validate_country(cls, v):
-        if v.title() not in SHIPPING_COUNTRIES:
+        # Normalize both to lowercase for comparison
+        normalized_v = v.strip().lower()
+        valid_countries = {k.lower(): k for k in SHIPPING_COUNTRIES.keys()}
+
+        if normalized_v not in valid_countries:
             raise ValueError(
                 f"Sorry, we currently do not ship to '{v}'. "
                 f"Available destinations: {', '.join(SHIPPING_COUNTRIES.keys())}"
             )
-        return v.title()
+
+        # Return the properly formatted name (original from dict)
+        return valid_countries[normalized_v]
 
 
 #  ------------------------- Helper functions ----------------------------------
@@ -382,7 +388,7 @@ class MayfairTechAgent(Agent):
             language="en",
             prompt="ALways transcribe in English or Urdu",
         )
-        llm_inst = openai.LLM(model="gpt-4o")
+        llm_inst = openai.LLM(model="gpt-4.1")
         tts = openai.TTS(model="gpt-4o-mini-tts", voice=voice)
         silero_vad = silero.VAD.load()
 
@@ -803,14 +809,24 @@ class MayfairTechAgent(Agent):
     @function_tool()
     async def place_order(self, context: RunContext, request: OrderRequest) -> dict:
         """
-        Creates an order preview for tech products (smartphones, laptops, etc.).
-        Calculates subtotal, shipping, total cost, and suggests upsell items.
+        Calls browse_products to check first whether what the user is ordering is available
+        Creates or updates an order preview for tech products.
+        Checks product & country validity, calculates subtotal, shipping, total cost,
+        and saves the preview to session memory for later modification or confirmation.
         """
-        order_id = f"ORD{random.randint(1000, 9999)}"
         subtotal = 0
         upsell_suggestions = []
 
-        # --- Helper: find product in catalog ---
+        # --- Step 1: Normalize and validate country ---
+        normalized_country = request.country.strip().title()
+        if normalized_country not in SHIPPING_COUNTRIES:
+            return {
+                "status": "error",
+                "message": f"❌ Sorry, we currently do not ship to '{request.country}'. "
+                f"Available destinations: {', '.join(SHIPPING_COUNTRIES.keys())}",
+            }
+
+        # --- Helper to find product in catalog ---
         def find_product(category, brand, model, color=None):
             category = category.lower()
             if category not in PRODUCTS:
@@ -827,67 +843,126 @@ class MayfairTechAgent(Agent):
                         return item
             return None
 
-        # --- Calculate subtotal and gather upsell items ---
-        order_items = {}
+        # --- Step 2: Validate requested items ---
+        valid_items = []
+        missing_items = []
         for item in request.items:
             product = find_product(item.category, item.brand, item.model, item.color)
             if not product:
-                raise ValueError(
-                    f"❌ Product not found: {item.brand} {item.model} in {item.category}"
-                )
+                missing_items.append(f"{item.brand} {item.model} ({item.category})")
+            else:
+                valid_items.append((item, product))
 
-            total_price = product["price"] * item.quantity
-            subtotal += total_price
-            order_items[f"{item.brand} {item.model}"] = item.quantity
+        # --- Step 3: Handle unavailable products ---
+        if missing_items:
+            unavailable_list = "\n- ".join(missing_items)
+            suggestions = await self.browse_products(context, category=None)
+            return {
+                "status": "error",
+                "message": (
+                    f"❌ The following products are not available:\n"
+                    f"- {unavailable_list}\n\n"
+                    f"You can explore these instead:\n\n{suggestions}"
+                ),
+            }
 
-            # Upsell suggestions
-            if item.category in UPSELL_MAP:
-                upsell_suggestions.extend(UPSELL_MAP[item.category])
+        # --- Step 4: Check for existing pending order ---
+        pending = context.session_data.get("pending_order")
+        if not pending:
+            # Create a new order
+            order_id = f"ORD{random.randint(1000, 9999)}"
+            items_dict = {}
+            for item, product in valid_items:
+                subtotal += product["price"] * item.quantity
+                items_dict[f"{item.brand} {item.model}"] = item.quantity
+                if item.category in UPSELL_MAP:
+                    upsell_suggestions.extend(UPSELL_MAP[item.category])
 
-        # --- Calculate shipping ---
-        shipping_rate = SHIPPING_COUNTRIES.get(request.country, 0.00)
-        shipping_cost = subtotal * shipping_rate
-        total_cost = subtotal + shipping_cost
+            shipping_rate = SHIPPING_COUNTRIES[normalized_country]
+            shipping_cost = subtotal * shipping_rate
+            total_cost = subtotal + shipping_cost
 
-        # --- Build order summary ---
+            pending = {
+                "id": order_id,
+                "name": request.name,
+                "email": request.email,
+                "country": normalized_country,
+                "items": items_dict,
+                "subtotal": subtotal,
+                "shipping_cost": shipping_cost,
+                "total": total_cost,
+                "status": "Pending Confirmation",
+            }
+        else:
+            # Merge new items into existing order
+            for item, product in valid_items:
+                key = f"{item.brand} {item.model}"
+                existing_qty = pending["items"].get(key, 0)
+                pending["items"][key] = existing_qty + item.quantity
+                if item.category in UPSELL_MAP:
+                    upsell_suggestions.extend(UPSELL_MAP[item.category])
+
+            # --- Recalculate subtotal from scratch (to avoid double-counting) ---
+            new_subtotal = 0
+            for model_name, qty in pending["items"].items():
+                # Find matching product from catalog to get price
+                brand, model = model_name.split(" ", 1)
+                for category, brands in PRODUCTS.items():
+                    if brand in brands:
+                        for prod in brands[brand]:
+                            if prod["model"].lower() == model.lower():
+                                new_subtotal += prod["price"] * qty
+
+            pending["subtotal"] = new_subtotal
+
+            # Recalculate shipping and total
+            rate = SHIPPING_COUNTRIES.get(pending["country"], 0)
+            pending["shipping_cost"] = pending["subtotal"] * rate
+            pending["total"] = pending["subtotal"] + pending["shipping_cost"]
+            # for item, product in valid_items:
+            #     key = f"{item.brand} {item.model}"
+            #     existing_qty = pending["items"].get(key, 0)
+            #     pending["items"][key] = existing_qty + item.quantity
+            #     pending["subtotal"] += product["price"] * item.quantity
+            #     if item.category in UPSELL_MAP:
+            #         upsell_suggestions.extend(UPSELL_MAP[item.category])
+
+            # # Recalculate shipping and total
+            # rate = SHIPPING_COUNTRIES.get(pending["country"], 0)
+            # pending["shipping_cost"] = pending["subtotal"] * rate
+            # pending["total"] = pending["subtotal"] + pending["shipping_cost"]
+
+        # Save updated order to session and ORDERS dict
+        ORDERS[pending["id"]] = pending
+        context.session_data["pending_order"] = pending
+
+        # --- Step 5: Generate summary text ---
         summary_lines = [
-            f"🧾 Order Preview (ID: {order_id})",
-            f"👤 Customer: {request.name} <{request.email}>",
-            f"🌍 Shipping Destination: {request.country}",
+            f"🧾 **Order Preview (ID: {pending['id']})**",
+            f"Name: {pending['name']}",
+            f"Email: {pending['email']}",
+            f"Country: {pending['country']}",
             "",
-            "Items Ordered:",
+            "📦 **Items Ordered:**",
         ]
-        for item, qty in order_items.items():
-            summary_lines.append(f"  • {item} x{qty}")
-        summary_lines.append(f"\n💰 Subtotal: ${subtotal:.2f}")
-        summary_lines.append(f"🚚 Shipping Cost: ${shipping_cost:.2f}")
-        summary_lines.append(f"💵 Total (with shipping): ${total_cost:.2f}")
+        for model, qty in pending["items"].items():
+            summary_lines.append(f"- {model}, Qty: {qty}")
+
+        summary_lines.append("")
+        summary_lines.append(f"Subtotal: ${pending['subtotal']:.2f}")
+        summary_lines.append(f"Shipping: ${pending['shipping_cost']:.2f}")
+        summary_lines.append(f"💰 **Total: ${pending['total']:.2f}**")
 
         if upsell_suggestions:
-            summary_lines.append(
-                f"\n💡 You might also like: {', '.join(set(upsell_suggestions))}"
-            )
-
-        summary_lines.append("\nPlease confirm to finalize your order.")
-        summary = "\n".join(summary_lines)
-
-        # --- Save order state ---
-        ORDERS[order_id] = {
-            "id": order_id,
-            "name": request.name,
-            "email": request.email,
-            "country": request.country,
-            "items": order_items,
-            "subtotal": subtotal,
-            "shipping_cost": shipping_cost,
-            "total": total_cost,
-            "status": "pending",
-        }
-        context.session_data["pending_order"] = ORDERS[order_id]
+            summary_lines.append("")
+            summary_lines.append("💡 You might also like:")
+            for suggestion in upsell_suggestions[:5]:
+                summary_lines.append(f"- {suggestion}")
 
         return {
-            "order_id": order_id,
-            "summary": summary,
+            "status": "success",
+            "order_id": pending["id"],
+            "summary": "\n".join(summary_lines),
             "requires_confirmation": True,
         }
 
@@ -976,6 +1051,18 @@ class MayfairTechAgent(Agent):
         if not pending:
             return "❌ No pending order found."
 
+        order_date = datetime.now()
+        delivery_days = random.randint(3, 10)  # delivery window between 3–10 days
+        delivery_date = order_date + timedelta(days=delivery_days)
+
+        items_formatted = "\n".join(
+            [f"   • {model} — Qty: {qty}" for model, qty in pending["items"].items()]
+        )
+
+        # Store them in the order dict
+        pending["order_date"] = order_date.strftime("%B %d, %Y")
+        pending["delivery_date"] = delivery_date.strftime("%B %d, %Y")
+
         pending["status"] = "confirmed"
         ORDERS[pending["id"]] = pending
         context.session_data.pop("pending_order", None)
@@ -986,16 +1073,21 @@ class MayfairTechAgent(Agent):
             f"Customer: {pending['name']}\n"
             f"Email: {pending['email']}\n"
             f"Country: {pending['country']}\n"
-            f"Items: {pending['items']}\n"
+            # f"Items: {pending['items']}\n"
+            f"Items Ordered:\n{items_formatted}\n\n"
             f"Subtotal: ${pending['subtotal']:.2f}\n"
             f"Shipping: ${pending['shipping_cost']:.2f}\n"
             f"Total: ${pending['total']:.2f}\n"
+            f"Order Placed On: {pending['order_date']}\n"
+            f"Estimated Delivery Date: {pending['delivery_date']}\n\n"
             f"Status: Confirmed"
         )
 
         # Send confirmation to both customer and MayfairTech team
         send_email(pending["email"], "Your Order Confirmation - MayfairTech", msg)
-        send_email("sales@mayfairtech.ai", "New Customer Order Received", msg)
+        send_email(
+            "syeda.maham.jafri.2024@gmail.com", "New Customer Order Received", msg
+        )
 
         return msg
 
@@ -1116,17 +1208,17 @@ async def entrypoint(ctx: JobContext):
 
         # Delete the room server-side using LiveKit API
         try:
-            client = api.RoomServiceClient(
-                os.getenv("LIVEKIT_API_URL"),
-                os.getenv("LIVEKIT_API_KEY"),
-                os.getenv("LIVEKIT_API_SECRET"),
+            lkapi = api.LiveKitAPI(
+                url=os.getenv("LIVEKIT_API_URL"),
+                api_key=os.getenv("LIVEKIT_API_KEY"),
+                api_secret=os.getenv("LIVEKIT_API_SECRET"),
             )
-            await client.delete_room(room=ctx.room.name)
-            logger.info(
-                f"💣 Room '{ctx.room.name}' deleted successfully from LiveKit server."
-            )
+            # Use DeleteRoomRequest per docs
+            req = DeleteRoomRequest(room=ctx.room.name)
+            await lkapi.room.delete_room(req)
+            logger.info(f"💣 Room '{ctx.room.name}' deleted successfully from server.")
         except Exception as e:
-            logger.error(f"⚠️ Error deleting LiveKit room: {e}")
+            logger.error(f"⚠️ Error deleting room via API: {e}")
 
         # Disconnect local room connection
         try:
@@ -1146,7 +1238,7 @@ async def entrypoint(ctx: JobContext):
 
     # --- Background ambient sounds
     background_audio = BackgroundAudioPlayer(
-        ambient_sound=AudioConfig(random.choice(AMBIENT_AUDIO_FILES), volume=0.6),
+        ambient_sound=AudioConfig(BuiltinAudioClip.OFFICE_AMBIENCE, volume=0.6),
         thinking_sound=[
             AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING, volume=0.7),
             AudioConfig(BuiltinAudioClip.KEYBOARD_TYPING2, volume=0.6),
@@ -1165,3 +1257,162 @@ if __name__ == "__main__":
             prewarm_fnc=prewarm,
         ),
     )
+
+# --------------------- Sample Conversation between the User and the MayfairTech Agent ------------------------
+"""
+🥇 1. Get Company Info
+   - User: What does MayfairTech do?
+     Tool Called: get_company_info(query="What does MayfairTech do?")
+     Agent Response:
+     MayfairTech is a technology solutions company specializing in AI-driven automation,
+     software development, and cloud infrastructure services. We help businesses scale
+     through intelligent, data-backed systems.
+
+   - User: Who founded MayfairTech and when?
+     Tool Called: get_company_info(query="Who founded MayfairTech and when?")
+     Agent Response:
+     MayfairTech was founded in 2016 by a team of software engineers and AI researchers.
+     The company started as a small tech consultancy and has grown into a global firm
+     serving clients across multiple industries.
+
+🥈 2. Leadership Team
+   - User: Who are the key leaders at MayfairTech?
+     Tool Called: get_leadership_team()
+     Agent Response:
+     Here’s our leadership team:
+     • Sarah Malik – CEO  
+     • Hamza Qureshi – CTO  
+     • Ayesha Rehman – Head of Marketing  
+     • Ali Raza – CFO  
+
+🥉 3. Customer Support (Contact Info)
+   - User: How can I reach your support team?
+     Tool Called: get_contact_info()
+     Agent Response:
+     You can reach us at:
+     📞 +92 21 3456 7890  
+     ✉️ support@mayfairtech.ai  
+     🕒 Office Hours: Mon–Fri, 9 AM – 6 PM
+
+   - User: What’s your office address?
+     Tool Called: get_contact_info(field="address")
+     Agent Response:
+     Our main office is located at:
+     MayfairTech Pvt. Ltd.  
+     22 Innovation Avenue, Karachi, Pakistan.
+
+🏅 4. Order Tracking
+   - User: Can you check my order status? My order ID is ORD456.
+     Tool Called: track_order_status(order_id="ORD456")
+     Agent Response:
+     Order **ORD456** is currently: **In Transit**.
+
+   - User: Check order ORD999.
+     Tool Called: track_order_status(order_id="ORD999")
+     Agent Response:
+     ❌ Sorry, I couldn’t find any order with ID **ORD999**. Please check if it’s correct.
+
+🎯 5. Browse Products
+   - User: What products do you have?
+     Tool Called: browse_products()
+     Agent Response:
+     Here are the product categories you can explore:
+     Smartphones, Laptops, Smartwatches, and Accessories.
+
+   - User: Show me Apple smartphones under $1000 in black.
+     Tool Called: browse_products(category="smartphones", brand="Apple", color="Black", max_price=1000)
+     Agent Response:
+     Here are the products matching your search:
+     - Apple iPhone 13 (Colors: Black, Blue, Price: $899)
+     - Apple iPhone SE (Colors: Black, Red, Price: $499)
+
+💬 6. Contact Company
+   - User: I want to contact you about a product partnership.
+     Tool Called: contact_company(contact={
+         "name": "Areeba Khan",
+         "email": "areeba.khan@example.com",
+         "phone": "0321-5678901",
+         "subject": "Product Partnership",
+         "message": "We’re interested in discussing a collaboration opportunity."
+     })
+     Agent Response:
+     Contact Request Preview (ID: CTC12345)
+     Name: Areeba Khan
+     Email: areeba.khan@example.com
+     Phone: 0321-5678901
+     Subject: Product Partnership
+     Message: We’re interested in discussing a collaboration opportunity.
+
+     Please confirm to finalize submitting this contact request.
+
+   - User: Yes, please confirm it.
+     Tool Called: confirm_contact_request(action="confirm")
+     Agent Response:
+     Your contact request has been submitted and a confirmation email has been sent to you.
+
+🧾 7. Register Complaint
+   - User: I want to report a problem with my order.
+     Tool Called: register_complaint(complaint={
+         "name": "Ahmed Raza",
+         "email": "ahmed.raza@example.com",
+         "order_id": "ORD654",
+         "complaint": "Received the wrong laptop model."
+     })
+     Agent Response:
+     📝 Complaint Preview:
+     Name: Ahmed Raza
+     Email: ahmed.raza@example.com
+     Order ID: ORD654
+     Complaint: Received the wrong laptop model.
+
+     ✅ Please confirm if you want to register this complaint.
+
+   - User: Yes, register it.
+     Tool Called: register_complaint(confirm=True)
+     Agent Response:
+     ✅ Your complaint has been registered and a copy has been sent to your email and our support team.
+
+📦 8. Place Order
+   - User: I want to order a Samsung Galaxy S22.
+     Tool Called: place_order(request={
+         "name": "Sara Khan",
+         "email": "sara.khan@example.com",
+         "country": "Pakistan",
+         "items": [{"category": "smartphones", "brand": "Samsung", "model": "Galaxy S22", "quantity": 1}]
+     })
+     Agent Response:
+     🧾 Order Preview (ID: ORD4321)
+     👤 Customer: Sara Khan <sara.khan@example.com>
+     🌍 Shipping Destination: Pakistan
+     Items Ordered:
+       • Samsung Galaxy S22 x1
+
+     💰 Subtotal: $899.00
+     🚚 Shipping Cost: $45.00
+     💵 Total: $944.00
+
+     💡 You might also like: Galaxy Buds, Wireless Charger
+
+     Please confirm to finalize your order.
+
+   - User: Add Galaxy Buds to my order.
+     Tool Called: add_item_to_order(category="accessories", brand="Samsung", model="Galaxy Buds", quantity=1)
+     Agent Response:
+     ✅ Added 1 × Samsung Galaxy Buds to your order.
+     💰 Subtotal: $1,098.00
+     🚚 Shipping: $55.00
+     💵 New Total: $1,153.00
+
+   - User: Confirm my order.
+     Tool Called: confirm_order()
+     Agent Response:
+     ✅ Order Confirmed!
+     ID: ORD4321
+     Customer: Sara Khan
+     Items: {'Samsung Galaxy S22': 1, 'Samsung Galaxy Buds': 1}
+     Subtotal: $1,098.00
+     Shipping: $55.00
+     Total: $1,153.00
+     Status: Confirmed
+
+"""
