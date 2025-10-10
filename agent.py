@@ -213,17 +213,6 @@ SHIPPING_COUNTRIES = {
     "Canada": 0.16,
 }
 
-
-AMBIENT_AUDIO_FILES = [
-    "audio/ambience1.mp3",
-    "audio/ambience2.mp3",
-    "audio/ambience3.mp3",
-    "audio/ambience4.mp3",
-    "audio/ambience5.mp3",
-    "audio/ambience6.mp3",
-    "audio/ambience7.mp3",
-]
-
 ORDERS = {}
 
 
