@@ -1,7 +1,7 @@
 import logging
 import asyncio
 from livekit import api  # <-- Add this import (LiveKit server-side SDK)
-from livekit.api import DeleteRoomRequest
+from livekit.plugins import noise_cancellation
 from livekit.api import DeleteRoomRequest
 import json
 import os
@@ -42,7 +42,7 @@ load_dotenv(dotenv_path=".env")
 if not hasattr(RunContext, "session_data"):
     RunContext.session_data = {}
 
-SESSION_DURATION_MINUTES = 1  # session limit
+SESSION_DURATION_MINUTES = 25  # session limit
 
 CONTACT_INFO = {
     "address": "123 Innovation Avenue, Karachi, Pakistan",
@@ -1222,7 +1222,11 @@ async def entrypoint(ctx: JobContext):
     # --- Start agent session
     ctx.call_start = datetime.utcnow()
     await session.start(
-        room=ctx.room, agent=agent, room_input_options=RoomInputOptions()
+        room=ctx.room,
+        agent=agent,
+        room_input_options=RoomInputOptions(
+            noise_cancellation=noise_cancellation.BVC(),
+        ),
     )
 
     # --- Background ambient sounds
