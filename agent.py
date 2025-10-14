@@ -844,6 +844,7 @@ class MayfairTechAgent(Agent):
 
         # --- Step 3: Handle unavailable products ---
         if missing_items:
+            context.session_data.pop("pending_order", None)
             unavailable_list = "\n- ".join(missing_items)
             suggestions = await self.browse_products(context, category=None)
             return {
